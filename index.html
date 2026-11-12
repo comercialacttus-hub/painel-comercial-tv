@@ -392,8 +392,8 @@ fieldset label{flex-direction:row !important;align-items:center;gap:.5rem !impor
           </div>
         </div>
         <div class="multiples">
-          <div><h3 style="color:var(--cream)">Faturamento</h3><div class="chart-wrap" id="pace-fat"></div></div>
-          <div><h3 style="color:var(--cream)">ACV</h3><div class="chart-wrap" id="pace-acv"></div></div>
+          <div><h3 style="color:var(--cream)">Caixa</h3><div class="chart-wrap" id="pace-fat"></div></div>
+          <div><h3 style="color:var(--cream)">Faturamento (ACV)</h3><div class="chart-wrap" id="pace-acv"></div></div>
         </div>
       </div>
       <div class="card" id="m-who"></div>
@@ -412,10 +412,9 @@ fieldset label{flex-direction:row !important;align-items:center;gap:.5rem !impor
       <div class="kpis" id="kpis"></div>
       <div class="card chart-card">
         <div class="scene-head" style="justify-content:space-between">
-          <h3>Faturamento mês a mês contra a meta</h3>
+          <h3>Caixa mês a mês contra a meta</h3>
           <div class="legend">
-            <span><i style="background:var(--gold-mark)"></i>Fat. pago (contratos do mês)</span>
-            <span><i style="background:var(--blue)"></i>Receita em caixa</span>
+            <span><i style="background:var(--gold-mark)"></i>Caixa (entrou na conta)</span>
             <span><i class="dash"></i>Meta</span>
             <span><i style="background:none;border:1.5px dashed var(--gold-mark)"></i>Projeção</span>
           </div>
@@ -441,8 +440,8 @@ fieldset label{flex-direction:row !important;align-items:center;gap:.5rem !impor
           </div>
         </div>
         <div class="multiples">
-          <div><h3 style="color:var(--cream)">Faturamento</h3><div class="chart-wrap" id="chart-cum-fat"></div></div>
-          <div><h3 style="color:var(--cream)">ACV contratado</h3><div class="chart-wrap" id="chart-cum-acv"></div></div>
+          <div><h3 style="color:var(--cream)">Caixa</h3><div class="chart-wrap" id="chart-cum-fat"></div></div>
+          <div><h3 style="color:var(--cream)">Faturamento (ACV)</h3><div class="chart-wrap" id="chart-cum-acv"></div></div>
         </div>
       </div>
       <div class="card mrr-card">
@@ -532,7 +531,7 @@ fieldset label{flex-direction:row !important;align-items:center;gap:.5rem !impor
         <label for="mm-manual"><input type="radio" name="meta-mode" id="mm-manual" value="manual"> Definidas aqui</label>
       </fieldset>
       <div class="dist">
-        <label for="dist-fat">Meta anual de faturamento<input id="dist-fat" type="text" inputmode="numeric" placeholder="250.000"></label>
+        <label for="dist-fat">Meta anual de caixa<input id="dist-fat" type="text" inputmode="numeric" placeholder="250.000"></label>
         <label for="dist-acv">Meta anual de ACV<input id="dist-acv" type="text" inputmode="numeric" placeholder="500.000"></label>
         <label for="dist-ctr">Contratos no ano<input id="dist-ctr" type="text" inputmode="numeric" placeholder="60"></label>
         <button class="btn small" id="btn-dist" type="button">Distribuir pelos 12 meses</button>
@@ -543,7 +542,7 @@ fieldset label{flex-direction:row !important;align-items:center;gap:.5rem !impor
       </div>
       <div class="table-wrap">
         <table class="meta-table">
-          <thead><tr><th>Mês</th><th class="r">Faturamento (R$)</th><th class="r">ACV (R$)</th><th class="r">Contratos</th></tr></thead>
+          <thead><tr><th>Mês</th><th class="r">Caixa (R$)</th><th class="r">Faturamento ACV (R$)</th><th class="r">Contratos</th></tr></thead>
           <tbody id="meta-rows"></tbody>
           <tfoot><tr><td style="text-align:left">Total do ano</td><td id="tot-fat" class="num"></td><td id="tot-acv" class="num"></td><td id="tot-ctr" class="num"></td></tr></tfoot>
         </table>
@@ -740,7 +739,28 @@ function parseCentralFinanceira(wb, year){
   fin.anoFat = fin.metaFat.reduce((a,b)=>a+b,0); fin.anoAcv = fin.metaAcv.reduce((a,b)=>a+b,0);
   if (!fin.metaFat.some(Boolean)) throw new Error("metas mensais vazias na aba Config");
   fin.carteira = parseCarteira(wb);
+  fin.caixaDia = parseCaixaDia(wb);
   return fin;
+}
+/* Caixa por dia (aba Lançamentos): entradas realizadas que entram como RECEITA no DRE */
+function parseCaixaDia(wb){
+  const sh = wbSheet(wb, "Lançamentos", "Lancamentos");
+  const out = {};
+  if (!sh) return out;
+  const rows = rowsOf(sh);
+  const h = headerIndex(rows, ["DATA","TIPO","VALOR","STATUS"]);
+  if (h < 0) return out;
+  const H = rows[h].map(norm), col = n => H.indexOf(norm(n));
+  const cd = col("DATA"), ct = col("TIPO"), cv = col("VALOR"), cs = col("STATUS"), cg = col("GRUPO DRE");
+  for (let i = h+1; i < rows.length; i++){
+    const r = rows[i];
+    if (norm(r[ct]) !== "ENTRADA" || norm(r[cs]) !== "REALIZADO") continue;
+    if (cg >= 0 && norm(r[cg]) !== "RECEITA") continue;
+    const d = toDate(r[cd], new Date().getFullYear()); if (!d) continue;
+    const k = d.getFullYear()*10000 + d.getMonth()*100 + d.getDate();
+    out[k] = (out[k] || 0) + money(r[cv]);
+  }
+  return out;
 }
 /* Carteira com situação (aba Contratos da Central Financeira): base do MRR, das cobranças e das renovações */
 function parseCarteira(wb){
@@ -847,6 +867,10 @@ function derive(now){
   const fat = Array(12).fill(0), acv = Array(12).fill(0), cnt = Array(12).fill(0), mrrNew = Array(12).fill(0);
   yc.forEach(c => { const m = c.date.getMonth(); fat[m]+=c.fat; acv[m]+=c.acv; cnt[m]++; mrrNew[m]+=c.mens; });
   const sum = a => a.reduce((x,y)=>x+y,0);
+  // "fat" passa a ser o CAIXA (o que entrou na conta, Central Financeira); fat. pago na assinatura fica só para o saldo
+  const fatPago = fat.slice();
+  const temCaixa = F.caixa && F.caixa.some(Boolean);
+  if (temCaixa) for (let m = 0; m < 12; m++) fat[m] = F.caixa[m] || 0;
   const totFat = sum(fat), totAcv = sum(acv), totCnt = yc.length;
   // carteira: Central Financeira (com situação) quando disponível; senão, contratos da Central Comercial
   const K = (F.carteira && F.carteira.length) ? F.carteira : C;
@@ -896,11 +920,16 @@ function derive(now){
   // dia a dia do mês corrente
   const dFat = Array(dim+1).fill(0), dAcv = Array(dim+1).fill(0);
   const monthList = yc.filter(c => c.date.getMonth() === cm).sort((a,b) => b.date - a.date);
-  monthList.forEach(c => { dFat[c.date.getDate()] += c.fat; dAcv[c.date.getDate()] += c.acv; });
+  monthList.forEach(c => { if (!temCaixa) dFat[c.date.getDate()] += c.fat; dAcv[c.date.getDate()] += c.acv; });
+  if (temCaixa){
+    const cd = F.caixaDia || {}; let tot = 0;
+    for (let dd = 1; dd <= dim; dd++){ const v = cd[Y*10000 + cm*100 + dd] || 0; dFat[dd] += v; tot += v; }
+    if (!tot && fat[cm]) dFat[Math.min(day, dim)] += fat[cm]; // sem detalhe diário: lança o mês no dia de hoje
+  }
   return {Y, cm, day, dim, nowAbs, fat, acv, cnt, mrrNew, dFat, dAcv, monthList, totFat, totAcv, totCnt, mrrSeries, mrrNow, mrrPrev, activeNow,
     avgFat, avgAcv, remaining, restFrac, scen, cumReal, cumProj, metaCum, schedRest, ends, renew, mrrRisk,
     byCons: group("consultor"), byOrig: group("origem"), byProd: group("produto"),
-    saldo: Math.max(0, totAcv - totFat), today0};
+    saldo: Math.max(0, totAcv - sum(fatPago)), totPago: sum(fatPago), today0};
 }
 
 /* ---------- gráficos (SVG à mão) ---------- */
@@ -920,12 +949,12 @@ function chartMonthly(d){
   const F = state.fin, base = d.scen[1];
   const proj = d.fat.map((v,m) => m < d.cm ? null : m === d.cm ? v + d.avgFat*d.restFrac : d.avgFat);
   const max = niceMax(Math.max(...d.fat, ...F.caixa, ...M.fat, ...proj.map(v => v||0)) * 1.08);
-  const iw = (W-L-R)/12, bw = Math.min(30, iw*0.28), y = v => H - B - (H-T-B)*v/max;
-  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Faturamento mensal contra a meta"><defs>
+  const iw = (W-L-R)/12, bw = Math.min(44, iw*0.42), y = v => H - B - (H-T-B)*v/max;
+  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Caixa mensal contra a meta"><defs>
     <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="7" stroke="rgba(212,150,0,.45)" stroke-width="2"/></pattern></defs>`;
   s += axisY(W,H,L,R,T,B,max,4);
   for (let m = 0; m < 12; m++){
-    const cx = L + iw*m + iw/2, x1 = cx - bw - 1, x2 = cx + 1;
+    const cx = L + iw*m + iw/2, x1 = cx - bw/2, x2 = cx + 1;
     const cur = m === d.cm;
     if (cur) s += `<rect x="${L+iw*m+3}" y="${T-8}" width="${iw-6}" height="${H-T-B+8}" rx="8" fill="rgba(227,161,0,.06)"/>`;
     // projeção (mês atual e futuros)
@@ -933,8 +962,7 @@ function chartMonthly(d){
       const pv = proj[m];
       if (pv > d.fat[m]) s += `<rect x="${x1}" y="${y(pv)}" width="${bw}" height="${y(d.fat[m]) - y(pv)}" fill="url(#hatch)" stroke="rgba(212,150,0,.7)" stroke-dasharray="4 3" stroke-width="1.2" rx="3"><title>${MONTHS[m]} · projeção base ${BRL(pv)}</title></rect>`;
     }
-    if (d.fat[m] > 0) s += barPath(x1, y(d.fat[m]), bw, H-B-y(d.fat[m]), "#D49600", `${MONTHS[m]} · Fat. pago ${BRL(d.fat[m])}`);
-    if (F.caixa[m] > 0) s += barPath(x2, y(F.caixa[m]), bw, H-B-y(F.caixa[m]), "#4A9BE0", `${MONTHS[m]} · Receita em caixa ${BRL(F.caixa[m])}`);
+    if (d.fat[m] > 0) s += barPath(x1, y(d.fat[m]), bw, H-B-y(d.fat[m]), "#D49600", `${MONTHS[m]} · Caixa ${BRL(d.fat[m])}`);
     // meta
     const my = y(M.fat[m]);
     s += `<line x1="${cx-iw*0.42}" x2="${cx+iw*0.42}" y1="${my}" y2="${my}" stroke="#F5EBE2" stroke-width="2" stroke-dasharray="6 4" opacity=".85"><title>${MONTHS[m]} · meta ${BRL(M.fat[m])}</title></line>`;
@@ -1017,8 +1045,8 @@ function render(){
   document.querySelectorAll(".yr").forEach(e => e.textContent = d.Y);
 
   // cena 1
-  $("#ring-fat").innerHTML = ring(d.totFat/M.anoFat, "#E3A100") + `<div class="ring-txt"><span class="lbl">Faturamento pago</span><span class="big num">${BRLk(d.totFat)}</span><span class="of num">de ${BRLk(M.anoFat)}</span><span class="gap num">Faltam ${BRLk(Math.max(0,M.anoFat-d.totFat))}</span></div>`;
-  $("#ring-acv").innerHTML = ring(d.totAcv/M.anoAcv, "#4A9BE0") + `<div class="ring-txt"><span class="lbl">ACV contratado</span><span class="big num">${BRLk(d.totAcv)}</span><span class="of num">de ${BRLk(M.anoAcv)}</span><span class="gap num">${d.totAcv >= M.anoAcv ? "Meta batida · +" + BRLk(d.totAcv-M.anoAcv) : "Faltam " + BRLk(M.anoAcv-d.totAcv)}</span></div>`;
+  $("#ring-fat").innerHTML = ring(d.totFat/M.anoFat, "#E3A100") + `<div class="ring-txt"><span class="lbl">Caixa recebido</span><span class="big num">${BRLk(d.totFat)}</span><span class="of num">de ${BRLk(M.anoFat)}</span><span class="gap num">Faltam ${BRLk(Math.max(0,M.anoFat-d.totFat))}</span></div>`;
+  $("#ring-acv").innerHTML = ring(d.totAcv/M.anoAcv, "#4A9BE0") + `<div class="ring-txt"><span class="lbl">Faturamento (ACV)</span><span class="big num">${BRLk(d.totAcv)}</span><span class="of num">de ${BRLk(M.anoAcv)}</span><span class="gap num">${d.totAcv >= M.anoAcv ? "Meta batida · +" + BRLk(d.totAcv-M.anoAcv) : "Faltam " + BRLk(M.anoAcv-d.totAcv)}</span></div>`;
   const mF = M.fat[d.cm], mA = M.acv[d.cm], fF = d.fat[d.cm], fA = d.acv[d.cm];
   const left = d.dim - d.day;
   const bizLeft = (() => { let n = 0; for (let i = d.day+1; i <= d.dim; i++){ const w = new Date(d.Y, d.cm, i).getDay(); if (w && w < 6) n++; } return n; })();
@@ -1026,9 +1054,9 @@ function render(){
     <div class="scene-head" style="justify-content:space-between"><span class="eyebrow">Mês corrente</span><span class="note num">dia ${d.day} de ${d.dim}</span></div>
     <div class="mname">${MONTHS[d.cm]}</div>
     <div class="month-row">
-      <span class="k">Faturamento</span><span></span><span class="v num">${BRLk(fF)} <small>/ ${BRLk(mF)}</small></span>
+      <span class="k">Caixa</span><span></span><span class="v num">${BRLk(fF)} <small>/ ${BRLk(mF)}</small></span>
       <div class="bar ${fF>=mF?"over":""}"><span style="width:${Math.min(100, mF? fF/mF*100 : 0)}%"></span></div>
-      <span class="k">ACV</span><span></span><span class="v num">${BRLk(fA)} <small>/ ${BRLk(mA)}</small></span>
+      <span class="k">Faturamento (ACV)</span><span></span><span class="v num">${BRLk(fA)} <small>/ ${BRLk(mA)}</small></span>
       <div class="bar ${fA>=mA?"over":""}"><span class="blue" style="width:${Math.min(100, mA? fA/mA*100 : 0)}%"></span></div>
     </div>
     <div class="month-foot num">
@@ -1042,13 +1070,13 @@ function render(){
     ["MRR ativo", BRLk(d.mrrNow), `${dm>=0?"<b>+"+BRLk(dm)+"</b>":BRLk(dm)} vs ${MS[(d.cm+11)%12]} · ${d.activeNow.length} contratos`],
     ["Ticket médio ACV", BRLk(tkAcv), `${d.totCnt} contratos em ${d.Y}`],
     ["Mensalidade média", BRL(tkMens), "contratos ativos hoje"],
-    ["Saldo a receber", BRLk(d.saldo), `${PCT(d.totAcv ? d.totFat/d.totAcv : 0)} do ACV já entrou`],
-    ["Forecast do ano", BRLk(d.scen[1].fat), `${PCT(d.scen[1].fat/M.anoFat)} da meta de faturamento`]
+    ["Saldo a receber", BRLk(d.saldo), `${PCT(d.totAcv ? d.totPago/d.totAcv : 0)} do ACV já pago`],
+    ["Forecast do ano", BRLk(d.scen[1].fat), `${PCT(d.scen[1].fat/M.anoFat)} da meta de caixa`]
   ].map(k => `<div class="kpi"><span class="lbl">${k[0]}</span><span class="val num">${k[1]}</span><span class="sub num">${k[2]}</span></div>`).join("");
   $("#chart-monthly").innerHTML = chartMonthly(d);
 
   // cena 2
-  $("#scenarios").innerHTML = `<div class="scen-row" style="padding-bottom:.3rem"><span></span><h3>Faturamento</h3><h3>ACV</h3></div>` +
+  $("#scenarios").innerHTML = `<div class="scen-row" style="padding-bottom:.3rem"><span></span><h3>Caixa</h3><h3>Faturamento (ACV)</h3></div>` +
     d.scen.map(s => `<div class="scen-row">
       <span class="name ${s.k==="Base"?"base":""}">${s.k}</span>
       <span class="cell"><span class="v num">${BRLk(s.fat)}</span><span class="p num">${PCT(s.fat/M.anoFat)} · ${s.fat>=M.anoFat?'<span class="chip ok">bate</span>':'<span class="chip no">abaixo</span>'}</span></span>
@@ -1057,7 +1085,7 @@ function render(){
   const needFat = Math.max(0, M.anoFat - d.totFat) / Math.max(d.remaining, .25);
   const sched = d.schedRest.map(r => `${MS[r.m]} ${BRLk(r.v)}`).join(" · ");
   $("#need").innerHTML = d.totFat >= M.anoFat
-    ? `<h3>Meta anual de faturamento</h3><span class="v">Batida</span><p>Tudo o que entrar agora é excedente.</p>`
+    ? `<h3>Meta anual de caixa</h3><span class="v">Batida</span><p>Tudo o que entrar agora é excedente.</p>`
     : `<h3>Para bater a meta anual</h3><span class="v num">${BRLk(needFat)} por mês</span>
        <p class="num">contra um ritmo médio de ${BRLk(d.avgFat)}/mês nos últimos 6 meses fechados.${sched ? ` Mensalidades e parcelas já contratadas a receber: ${sched}.` : ""}</p>`;
   $("#chart-cum-fat").innerHTML = chartCum(d, "fat");
@@ -1201,8 +1229,8 @@ function chartPace(d, k){
 }
 function renderMes(d){
   const cm = d.cm, frac = d.day/d.dim;
-  $("#g-fat").innerHTML = gaugeCard("Faturamento", d.fat[cm], M.fat[cm], d, "#E3A100");
-  $("#g-acv").innerHTML = gaugeCard("ACV", d.acv[cm], M.acv[cm], d, "#4A9BE0");
+  $("#g-fat").innerHTML = gaugeCard("Caixa", d.fat[cm], M.fat[cm], d, "#E3A100");
+  $("#g-acv").innerHTML = gaugeCard("Faturamento (ACV)", d.acv[cm], M.acv[cm], d, "#4A9BE0");
   // contratos
   const tk = d.totCnt ? d.totAcv/d.totCnt : 0, done = d.cnt[cm];
   const set = M.ctr[cm] > 0, metaC = set ? M.ctr[cm] : (tk ? Math.ceil(M.acv[cm]/tk) : 0);
