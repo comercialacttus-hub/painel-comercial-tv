@@ -651,6 +651,8 @@ const absM = d => d.getFullYear()*12 + d.getMonth();
 const daysIn = (y,m) => new Date(y, m+1, 0).getDate();
 const addMonths = (d,n) => { const r = new Date(d.getFullYear(), d.getMonth()+n, 1); r.setDate(Math.min(d.getDate(), daysIn(r.getFullYear(), r.getMonth()))); return r; };
 const cardPay = f => /CART/.test(norm(f));
+const lumpPay = f => /CART|VISTA/.test(norm(f));
+const baseCli = n => norm(n).replace(/\s*-\s*(RENOVACAO|UPSELL|UP SELL|CROSS-SELL|CROSS SELL)\s*$/, "").replace(/^(DR|DRA)\.?\s+/, "");
 
 /* ---------- estado ---------- */
 const state = {
@@ -737,7 +739,30 @@ function parseCentralFinanceira(wb, year){
   }
   fin.anoFat = fin.metaFat.reduce((a,b)=>a+b,0); fin.anoAcv = fin.metaAcv.reduce((a,b)=>a+b,0);
   if (!fin.metaFat.some(Boolean)) throw new Error("metas mensais vazias na aba Config");
+  fin.carteira = parseCarteira(wb);
   return fin;
+}
+/* Carteira com situação (aba Contratos da Central Financeira): base do MRR, das cobranças e das renovações */
+function parseCarteira(wb){
+  const sh = wbSheet(wb, "Contratos");
+  if (!sh) return [];
+  const rows = rowsOf(sh);
+  const h = headerIndex(rows, ["CLIENTE","SITUACAO","FIM VIGENCIA"]);
+  if (h < 0) return [];
+  const H = rows[h].map(norm), col = n => H.findIndex(x => x === norm(n) || x.startsWith(norm(n)));
+  const c = {cli:col("CLIENTE"), cons:col("CONSULTOR"), prod:col("PRODUTO"), ini:col("INICIO"), dur:col("DURACAO"),
+             mens:col("MENSALIDADE"), acv:col("ACV"), cob:col("COBRANCA"), sit:col("SITUACAO"), fim:col("FIM VIGENCIA")};
+  const out = [];
+  for (let i = h+1; i < rows.length; i++){
+    const r = rows[i], cli = String(r[c.cli] || "").trim();
+    if (!cli || norm(cli) === "TOTAL" || norm(cli) === "TOTAIS") continue;
+    const d = toDate(r[c.ini], new Date().getFullYear()); if (!d) continue;
+    const dur = parseInt(String(r[c.dur]).replace(/\D/g,""),10) || 1;
+    const fim = toDate(r[c.fim], new Date().getFullYear()) || addMonths(d, dur);
+    out.push({date:d, cliente:cli, consultor:String(r[c.cons]||"").trim() || "—", produto:String(r[c.prod]||"").trim() || "—",
+      formato:String(r[c.cob]||"").trim(), dur, mens:money(r[c.mens]), acv:money(r[c.acv]), situacao:norm(r[c.sit]), end:fim});
+  }
+  return out;
 }
 function parseFinanceiro(wb, year){
   if (wbSheet(wb, "DRE") && wbSheet(wb, "Config")) return parseCentralFinanceira(wb, year);
@@ -823,11 +848,14 @@ function derive(now){
   yc.forEach(c => { const m = c.date.getMonth(); fat[m]+=c.fat; acv[m]+=c.acv; cnt[m]++; mrrNew[m]+=c.mens; });
   const sum = a => a.reduce((x,y)=>x+y,0);
   const totFat = sum(fat), totAcv = sum(acv), totCnt = yc.length;
-  const active = (c, a) => { const s = absM(c.date); return a >= s && a < s + c.dur; };
-  const mrrAt = a => C.reduce((t,c) => t + (active(c,a) ? c.mens : 0), 0);
+  // carteira: Central Financeira (com situação) quando disponível; senão, contratos da Central Comercial
+  const K = (F.carteira && F.carteira.length) ? F.carteira : C;
+  const okSit = c => !c.situacao || c.situacao === "ATIVO";
+  const active = (c, a) => { const s = absM(c.date); return a >= s && a < s + c.dur && (a < nowAbs || okSit(c)); };
+  const mrrAt = a => K.reduce((t,c) => t + (active(c,a) ? c.mens : 0), 0);
   const mrrSeries = []; for (let i = 0; i < 18; i++) mrrSeries.push({abs: Y*12 + i, v: mrrAt(Y*12 + i)});
   const mrrNow = mrrAt(nowAbs), mrrPrev = mrrAt(nowAbs-1);
-  const activeNow = C.filter(c => active(c, nowAbs));
+  const activeNow = K.filter(c => active(c, nowAbs));
   // ritmo: média dos últimos 6 meses fechados com movimento
   const closed = []; for (let m = Math.max(0, cm-6); m < cm; m++) closed.push(m);
   const avg = a => closed.length ? sum(closed.map(m => a[m])) / closed.length : 0;
@@ -852,14 +880,16 @@ function derive(now){
   const metaCum = {fat:[], acv:[]}; let rf = 0, ra = 0;
   for (let m = 0; m < 12; m++){ rf += M.fat[m]; ra += M.acv[m]; metaCum.fat.push(rf); metaCum.acv.push(ra); }
   // cronograma de recebimento (Cartão = à vista na assinatura; demais = mensalidade na vigência)
-  const sched = a => C.reduce((t,c) => { const s = absM(c.date);
-    if (cardPay(c.formato)) return t + (s === a ? c.acv : 0);
+  const sched = a => K.reduce((t,c) => { const s = absM(c.date);
+    if (lumpPay(c.formato)) return t + (s === a ? c.acv : 0);
     return t + (active(c,a) ? c.mens : 0); }, 0);
   const schedRest = []; for (let m = cm+1; m < 12; m++) schedRest.push({m, v: sched(Y*12+m)});
   // vencimentos
-  const ends = C.map(c => ({...c, end: addMonths(c.date, c.dur)}));
+  const ends = K.map(c => ({...c, end: c.end || addMonths(c.date, c.dur)}));
   const MS_DAY = 864e5, today0 = new Date(Y, cm, day);
-  const renew = ends.map(c => ({...c, days: Math.round((c.end - today0)/MS_DAY)}))
+  // já renovado/substituído: existe contrato posterior do mesmo cliente (renovação ou upsell; cross-sell corre em paralelo)
+  const replaced = c => ends.some(x => x !== c && !/CROSS/.test(norm(x.cliente)) && baseCli(x.cliente) === baseCli(c.cliente) && x.date > c.date && x.end > c.end);
+  const renew = ends.filter(c => okSit(c) && !replaced(c)).map(c => ({...c, days: Math.round((c.end - today0)/MS_DAY)}))
     .filter(c => c.days <= 60 && c.days >= -30).sort((a,b) => a.days - b.days);
   const mrrRisk = renew.filter(c => c.days >= 0).reduce((t,c)=>t+c.mens,0);
   const group = (key) => { const g = {}; yc.forEach(c => { const k = c[key] || "—"; g[k] = g[k] || {k, n:0, fat:0, acv:0}; g[k].n++; g[k].fat+=c.fat; g[k].acv+=c.acv; }); return Object.values(g).sort((a,b)=>b.acv-a.acv); };
@@ -1210,14 +1240,18 @@ function renderCalendar(d){
   const evs = [];
   const winStart = new Date(Y, M, 1 - startW), winEnd = new Date(Y, M, dim + 14);
   state.contracts.forEach(c => {
-    const s = absM(c.date), nm = shortName(c.cliente);
-    if (c.date >= winStart && c.date <= winEnd) evs.push({date:c.date, k:"ass", t:nm, sub:`assinatura · ${c.produto}`, v:c.acv});
-    if (!cardPay(c.formato)) for (let i = 1; i < c.dur; i++){
+    if (c.date >= winStart && c.date <= winEnd) evs.push({date:c.date, k:"ass", t:shortName(c.cliente), sub:`assinatura · ${c.produto}`, v:c.acv});
+  });
+  const renewedSet = new Set(d.ends.filter(c => d.ends.some(x => x !== c && !/CROSS/.test(norm(x.cliente)) && baseCli(x.cliente) === baseCli(c.cliente) && x.date > c.date && x.end > c.end)));
+  d.ends.forEach(c => {
+    const nm = shortName(c.cliente), ok = !c.situacao || c.situacao === "ATIVO";
+    if (!lumpPay(c.formato)) for (let i = 1; i < c.dur; i++){
       const dd = addMonths(c.date, i);
-      if (dd >= winStart && dd <= winEnd) evs.push({date:dd, k:"cob", t:nm, sub:`parcela ${i+1}/${c.dur}`, v:c.mens});
+      if (dd >= c.end) break;
+      if (dd >= winStart && dd <= winEnd && (ok || dd < d.today0)) evs.push({date:dd, k:"cob", t:nm, sub:`parcela ${i+1}/${c.dur}`, v:c.mens});
     }
-    const end = addMonths(c.date, c.dur);
-    if (end >= winStart && end <= winEnd) evs.push({date:end, k:"ven", t:nm, sub:"fim da vigência", v:c.mens});
+    const end = c.end;
+    if (ok && !renewedSet.has(c) && end >= winStart && end <= winEnd) evs.push({date:end, k:"ven", t:nm, sub:"fim da vigência", v:c.mens});
   });
   const key = dt => dt.getFullYear()*10000 + dt.getMonth()*100 + dt.getDate();
   const byDay = {}; evs.forEach(e => { (byDay[key(e.date)] = byDay[key(e.date)] || []).push(e); });
